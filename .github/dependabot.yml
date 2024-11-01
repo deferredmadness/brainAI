@@ -1,0 +1,6 @@
+version: 2
+updates:
+  - package-ecosystem: "pip" # Assuming the project uses pip for Python dependencies
+    directory: "/" # Location of your requirements.txt or setup.py file
+    schedule:
+      interval: "weekly" # Set to "daily", "weekly", or "monthly" based on your preference
