@@ -1,0 +1,232 @@
+import random
+import openai
+import logging
+import matplotlib.pyplot as plt
+from time import sleep
+import tkinter as tk
+from tkinter import messagebox
+from cryptography.fernet import Fernet
+import os
+import pickle
+import speech_recognition as sr
+from gtts import gTTS
+import playsound
+import requests
+import datetime
+
+# Path to encrypted key file
+KEY_FILE = "api_key.enc"
+FERNET_KEY = Fernet.generate_key()
+
+# Hardcoded creator name
+CREATOR_NAME = "Arka"
+
+def initialize_openai(api_key):
+    openai.api_key = api_key
+
+class Brain:
+    def __init__(self):
+        self.conversation_history = []
+        self.user_profile = {"name": "User", "preferences": {}, "mood": "neutral"}
+        self.reminders = []
+        self.long_term_memory = {}
+        self.q_table = {}  # Q-learning table for state-action-reward values
+        self.learning_rate = 0.1
+        self.discount_factor = 0.9
+        self.emotions = {
+            "happiness": 0.5,
+            "anger": 0.0,
+            "fear": 0.0,
+            "curiosity": 0.5,
+            "boredom": 0.0,
+            "excitement": 0.0
+        }
+
+        logging.basicConfig(
+            filename='brain_activity.log', 
+            level=logging.INFO, 
+            format='%(asctime)s - %(message)s'
+        )
+
+    def adjust_emotions(self, reward):
+        """Adjust emotions based on rewards."""
+        if reward > 0:
+            self.emotions["happiness"] = min(1.0, self.emotions["happiness"] + reward * 0.1)
+        else:
+            self.emotions["anger"] = min(1.0, self.emotions["anger"] - reward * 0.1)
+
+    def update_q_table(self, state, action, reward, next_state):
+        """Q-learning update rule."""
+        old_value = self.q_table.get((state, action), 0)
+        next_max = max([self.q_table.get((next_state, a), 0) for a in range(3)])
+
+        # Q-learning formula
+        new_value = old_value + self.learning_rate * (reward + self.discount_factor * next_max - old_value)
+        self.q_table[(state, action)] = new_value
+
+    def choose_action(self, state):
+        """Choose an action based on Q-values."""
+        if random.random() < 0.1:
+            return random.choice([0, 1, 2])
+        actions = [self.q_table.get((state, a), 0) for a in range(3)]
+        return actions.index(max(actions))
+
+    def llm_response(self, prompt):
+        """Generate a response using GPT."""
+        try:
+            response = openai.Completion.create(
+                engine="gpt-3.5-turbo",
+                prompt=prompt,
+                max_tokens=150
+            )
+            return response.choices[0].text.strip()
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    def get_reward(self, user_input, response):
+        """Evaluate response quality and assign a reward."""
+        if "sorry" in response.lower():
+            return -1  # Negative reward for failed response
+        elif "weather" in user_input.lower():
+            return 1  # Positive reward for valid queries
+        else:
+            return 0  # Neutral reward
+
+    def process_input(self, user_input):
+        """Process input and provide responses."""
+        state = tuple(self.emotions.values())
+        action = self.choose_action(state)
+
+        # Check if the user asked about the AI's creator
+        if "who created you" in user_input.lower():
+            return f"I was created by {CREATOR_NAME}, an amazing developer!"
+
+        # Parse for user-related commands
+        if "my name is" in user_input.lower():
+            name = user_input.split("my name is")[-1].strip()
+            self.set_user_profile("name", name)
+            return f"Nice to meet you, {name}!"
+
+        if "remind me to" in user_input.lower():
+            reminder_text = user_input.split("remind me to")[-1].strip()
+            remind_time = datetime.datetime.now() + datetime.timedelta(minutes=1)
+            self.add_reminder(reminder_text, remind_time)
+            return f"I'll remind you to {reminder_text} in one minute."
+
+        # Use GPT model to generate a response
+        response = self.llm_response(user_input)
+        response = self.personalize_response(response)
+
+        # Reward system based on the quality of the response
+        reward = self.get_reward(user_input, response)
+        self.adjust_emotions(reward)
+        next_state = tuple(self.emotions.values())
+        self.update_q_table(state, action, reward, next_state)
+
+        return response
+
+    def personalize_response(self, response):
+        """Adjust response tone based on user mood."""
+        mood = self.user_profile["mood"]
+        if mood == "happy":
+            return f"😊 {response}"
+        elif mood == "sad":
+            return f"🙁 {response}. I'm here if you need to talk."
+        return response
+
+    def add_reminder(self, message, time):
+        """Add a reminder for a specific time."""
+        self.reminders.append({"message": message, "time": time})
+        logging.info(f"Reminder set: {message} at {time}")
+
+    def check_reminders(self):
+        """Check and alert any active reminders."""
+        now = datetime.datetime.now()
+        for reminder in self.reminders[:]:
+            if reminder["time"] <= now:
+                self.speak(f"Reminder: {reminder['message']}")
+                self.reminders.remove(reminder)
+
+    def speak(self, text):
+        """Convert text to speech."""
+        tts = gTTS(text=text, lang='en')
+        tts.save("response.mp3")
+        playsound.playsound("response.mp3")
+        os.remove("response.mp3")
+
+    def listen(self):
+        """Listen for voice input."""
+        recognizer = sr.Recognizer()
+        with sr.Microphone() as source:
+            print("Listening...")
+            audio = recognizer.listen(source)
+            try:
+                return recognizer.recognize_google(audio)
+            except sr.UnknownValueError:
+                return "Sorry, I didn't catch that."
+            except sr.RequestError as e:
+                return f"Speech recognition error: {str(e)}"
+
+    def visualize_emotions(self):
+        """Continuously plot emotions in real-time."""
+        plt.ion()
+        fig, ax = plt.subplots()
+
+        while True:
+            ax.clear()
+            ax.bar(self.emotions.keys(), self.emotions.values(), color='skyblue')
+            ax.set_ylim([0, 1])
+            ax.set_title("Emotional State Over Time")
+            plt.pause(1)
+
+def start_brain_app(api_key):
+    """Start the Brain AI app."""
+    initialize_openai(api_key)
+    brain = Brain()
+
+    while True:
+        user_input = brain.listen()
+        brain.check_reminders()
+        response = brain.process_input(user_input)
+        brain.speak(response)
+
+        if "exit" in user_input.lower():
+            print("Exiting...")
+            break
+
+    brain.visualize_emotions()
+
+def save_key(api_key):
+    """Encrypt and save the API key."""
+    cipher = Fernet(FERNET_KEY)
+    encrypted_key = cipher.encrypt(api_key.encode())
+    with open(KEY_FILE, "wb") as f:
+        f.write(encrypted_key)
+
+def load_key():
+    """Decrypt and load the API key."""
+    cipher = Fernet(FERNET_KEY)
+    with open(KEY_FILE, "rb") as f:
+        encrypted_key = f.read()
+    return cipher.decrypt(encrypted_key).decode()
+
+def on_start():
+    """Handle Start button click."""
+    api_key = api_key_entry.get()
+    if api_key:
+        save_key(api_key)
+        root.destroy()
+        start_brain_app(api_key)
+    else:
+        messagebox.showerror("Error", "Please enter a valid API key.")
+
+# GUI for API Key Input
+root = tk.Tk()
+root.title("Brain AI - Enter API Key")
+
+tk.Label(root, text="Enter OpenAI API Key:").pack(pady=10)
+api_key_entry = tk.Entry(root, show="*", width=40)
+api_key_entry.pack(pady=5)
+
+tk.Button(root, text="Start", command=on_start).pack(pady=20)
+root.mainloop()
